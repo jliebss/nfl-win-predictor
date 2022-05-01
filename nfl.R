@@ -31,23 +31,29 @@ library(iml)
 # Select All Columns Except
 # features <- as.data.frame(box_score[, !names(box_score) %in% c("game_id", "posteam", "winner_name", "winner")])
 
+# Rename columns
+# df %>% rename(new_name = old_name)
+
 
 # ---- Load Data ----
-raw_data <- nflfastR::load_pbp(1999:2021)
+ptm <- proc.time()
+raw_data <- nflfastR::load_pbp(2012:2021)
 raw_data <- clean_pbp(raw_data)
 raw_data <- raw_data[complete.cases(raw_data$posteam), ]
+print(proc.time() - ptm)
 
-schedule <- fast_scraper_schedules(1999:2021) %>% 
+
+schedule <- fast_scraper_schedules(2012:2021) %>% 
   mutate(winner_name = case_when(home_result > 0 ~ home_team,
                                  home_result < 0 ~ away_team,
                                  TRUE            ~ "TIE"))
-
+  
 
 # ---- Prepare and Partition Data ----
 season_stats <- raw_data %>% 
   group_by(game_id, posteam) %>% 
-  summarize_at(vars(yards_gained, passing_yards, rushing_yards, epa, interception, fumble, penalty),
-               sum, # make sure this doesn't break
+  summarise_at(c("yards_gained", "passing_yards", "rushing_yards", "epa", "interception", "fumble", "penalty"),
+               sum,
                na.rm = TRUE) %>% 
   merge(schedule[, c("game_id", "season", "winner_name", "home_team", "away_team")], by = "game_id", all.x = TRUE)
 
@@ -101,10 +107,24 @@ train_not_scaled <- model_stats[train_ind,  -1] %>%
 test_not_scaled  <- model_stats[-train_ind, -1] %>% 
   drop_na()
 
-train <- train_not_scaled
-test  <- test_not_scaled
-train[, -ncol(train)] <- scale(train[, -ncol(train)])
-test[, -ncol(test)]   <- scale(test[, -ncol(test)])
+# # raw features
+# train <- train_not_scaled
+# test  <- test_not_scaled
+
+# # standardized features
+# train <- train_not_scaled
+# test  <- test_not_scaled
+# train[, -ncol(train)] <- scale(train[, -ncol(train)])
+# test[, -ncol(test)]   <- scale(test[, -ncol(test)])
+
+# # normalized features
+# train <- train_not_scaled
+# test  <- test_not_scaled
+# min_max_norm <- function(x) {
+#   (x - min(x)) / (max(x) - min(x))
+# }
+# train[, -ncol(train)] <- as.data.frame(lapply(train[, -ncol(train)], min_max_norm))
+# test[, -ncol(test)]   <- as.data.frame(lapply(test[, -ncol(test)], min_max_norm))
 
 # ---- Logistic Regression ----
 logit_fit   <- glm(winner ~ .,
@@ -120,6 +140,56 @@ logit_cm    <- caret::confusionMatrix(logit_table)
 logit_acc   <- logit_cm$overall[1]
 
 
+# ---- Logistic Regression Test Loop for Weeks ----
+# TODO: get training/test data with week col
+train_for_weeks <- model_stats[train_ind, ] %>% 
+  drop_na() %>% 
+  merge(schedule[, c("game_id", "week")], by = "game_id", all.x = TRUE) %>% 
+  dplyr::select(-game_id)
+test_for_weeks  <- model_stats[-train_ind, ] %>% 
+  drop_na() %>% 
+  merge(schedule[, c("game_id", "week")], by = "game_id", all.x = TRUE) %>% 
+  dplyr::select(-game_id)
+
+logit_model <- function(train_data, test_data) {
+  
+  train_data <- train_for_weeks
+  test_data  <- test_for_weeks
+  test_label <- test_for_weeks$winner
+  
+  df <- setNames(data.frame(matrix(ncol = 2, nrow = 0)), c("week", "accuracy"))
+  
+  for (x in 2:17) {
+    week_train_data <- train_data %>% 
+      filter(week == x)
+    week_test_data <- test_data %>% 
+      filter(week == x)
+    week_test_label <- week_test_data$winner
+    
+    
+    logit_fit   <- glm(winner ~ .,
+                       data   = week_train_data,
+                       family = binomial)
+    logit_probs <- predict(logit_fit,
+                           newdata = week_test_data,
+                           type    = "response")
+    logit_pred  <- ifelse(logit_probs > 0.5, 1, 0)
+    
+    logit_table <- table(week_test_label, logit_pred)
+    logit_cm    <- caret::confusionMatrix(logit_table)
+    logit_acc   <- logit_cm$overall[1]
+    
+    temp <- data.frame(week = x, accuracy = logit_acc)
+    df <- rbind(df, temp)
+  }
+  
+  return(df)
+  
+}
+logit_by_weeks <- logit_model(train_for_weeks, test_for_weeks) %>% 
+  arrange(desc(accuracy))
+
+
 # ---- Naive Bayes ----
 naive_model <- naiveBayes(winner ~ .,
                           data = train)
@@ -133,8 +203,8 @@ naive_acc   <- naive_cm$overall[1]
 
 
 # ---- KNN ----
-knn_pred <- knn(train = train,
-                test  = test,
+knn_pred <- knn(train = train[, -ncol(train)],
+                test  = test[,  -ncol(test)],
                 cl    = train$winner,
                 k     = 11)
 
@@ -184,11 +254,40 @@ vegas_acc   <- vegas_cm$overall[1]
 
 
 # ---- Model Comparison ----
-results_df <-
-  data.frame(model    = c("logistic", "naive_bayes", "knn", "svm", "decision_tree", "vegas"),
-             accuracy = c(logit_acc, naive_acc, knn_acc, svm_acc, tree_acc, vegas_acc)) %>%
-  arrange(desc(accuracy))
-view(results_df)
+# # raw df
+# results_raw_df <-
+# data.frame(model    = c("logistic", "naive_bayes", "knn", "svm", "decision_tree", "vegas"),
+#            accuracy = c(logit_acc, naive_acc, knn_acc, svm_acc, tree_acc, vegas_acc)) %>%
+#   arrange(desc(accuracy))
+# view(results_raw_df)
+
+# # standardized df
+# results_standardized_df <-
+#   data.frame(model    = c("logistic", "naive_bayes", "knn", "svm", "decision_tree", "vegas"),
+#              accuracy = c(logit_acc, naive_acc, knn_acc, svm_acc, tree_acc, vegas_acc)) %>%
+#   arrange(desc(accuracy))
+# view(results_standardized_df)
+
+# # normalized df
+# results_normalized_df <-
+#   data.frame(model    = c("logistic", "naive_bayes", "knn", "svm", "decision_tree", "vegas"),
+#              accuracy = c(logit_acc, naive_acc, knn_acc, svm_acc, tree_acc, vegas_acc)) %>%
+#   arrange(desc(accuracy))
+# view(results_normalized_df)
+
+main_results_df <- results_raw_df %>%
+  merge(results_standardized_df, by = "model") %>%
+  merge(results_normalized_df,   by = "model") %>%
+  rename(raw = accuracy.x,
+         standardized = accuracy.y,
+         normalized = accuracy) %>%
+  pivot_longer(!model, names_to = "feature_str", values_to = "accuracy") %>%
+  mutate(feature_str = factor(feature_str, levels = c("raw", "standardized", "normalized")))
+view(main_results_df)
+
+ggplot(main_results_df, aes(model, accuracy, fill = feature_str)) +
+  geom_col(position = "dodge")
+
 
 # ---- IML ----
 features <- as.data.frame(model_stats[, !names(model_stats) %in% c("game_id", "winner")])
