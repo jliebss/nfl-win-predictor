@@ -1,15 +1,3 @@
-# ---- Load Packages ----
-# library(conflicted)
-library(nflfastR)
-library(tidyverse)
-library(MASS)
-library(e1071)
-library(caret)
-library(class)
-library(rpart)
-library(iml)
-
-
 # ---- Useful Code ----
 # Time Code
 # ptm <- proc.time()
@@ -35,15 +23,27 @@ library(iml)
 # df %>% rename(new_name = old_name)
 
 
+# ---- Load Packages ----
+# library(conflicted)
+library(nflfastR)
+library(tidyverse)
+library(MASS)
+library(e1071)
+library(caret)
+library(class)
+library(rpart)
+library(iml)
+
+
 # ---- Load Data ----
 ptm <- proc.time()
-raw_data <- nflfastR::load_pbp(2012:2021)
+raw_data <- nflfastR::load_pbp(1999:2021)
 raw_data <- clean_pbp(raw_data)
 raw_data <- raw_data[complete.cases(raw_data$posteam), ]
 print(proc.time() - ptm)
 
 
-schedule <- fast_scraper_schedules(2012:2021) %>% 
+schedule <- fast_scraper_schedules(1999:2021) %>% 
   mutate(winner_name = case_when(home_result > 0 ~ home_team,
                                  home_result < 0 ~ away_team,
                                  TRUE            ~ "TIE"))
@@ -107,6 +107,10 @@ train_not_scaled <- model_stats[train_ind,  -1] %>%
 test_not_scaled  <- model_stats[-train_ind, -1] %>% 
   drop_na()
 
+
+# ---- Feature Scaling ----
+# Uncomment the type of feature scaling desired
+
 # # raw features
 # train <- train_not_scaled
 # test  <- test_not_scaled
@@ -126,6 +130,7 @@ test_not_scaled  <- model_stats[-train_ind, -1] %>%
 # train[, -ncol(train)] <- as.data.frame(lapply(train[, -ncol(train)], min_max_norm))
 # test[, -ncol(test)]   <- as.data.frame(lapply(test[, -ncol(test)], min_max_norm))
 
+
 # ---- Logistic Regression ----
 logit_fit   <- glm(winner ~ .,
                  data   = train,
@@ -138,56 +143,6 @@ logit_pred  <- ifelse(logit_probs > 0.5, 1, 0)
 logit_table <- table(test$winner, logit_pred)
 logit_cm    <- caret::confusionMatrix(logit_table)
 logit_acc   <- logit_cm$overall[1]
-
-
-# ---- Logistic Regression Test Loop for Weeks ----
-# TODO: get training/test data with week col
-train_for_weeks <- model_stats[train_ind, ] %>% 
-  drop_na() %>% 
-  merge(schedule[, c("game_id", "week")], by = "game_id", all.x = TRUE) %>% 
-  dplyr::select(-game_id)
-test_for_weeks  <- model_stats[-train_ind, ] %>% 
-  drop_na() %>% 
-  merge(schedule[, c("game_id", "week")], by = "game_id", all.x = TRUE) %>% 
-  dplyr::select(-game_id)
-
-logit_model <- function(train_data, test_data) {
-  
-  train_data <- train_for_weeks
-  test_data  <- test_for_weeks
-  test_label <- test_for_weeks$winner
-  
-  df <- setNames(data.frame(matrix(ncol = 2, nrow = 0)), c("week", "accuracy"))
-  
-  for (x in 2:17) {
-    week_train_data <- train_data %>% 
-      filter(week == x)
-    week_test_data <- test_data %>% 
-      filter(week == x)
-    week_test_label <- week_test_data$winner
-    
-    
-    logit_fit   <- glm(winner ~ .,
-                       data   = week_train_data,
-                       family = binomial)
-    logit_probs <- predict(logit_fit,
-                           newdata = week_test_data,
-                           type    = "response")
-    logit_pred  <- ifelse(logit_probs > 0.5, 1, 0)
-    
-    logit_table <- table(week_test_label, logit_pred)
-    logit_cm    <- caret::confusionMatrix(logit_table)
-    logit_acc   <- logit_cm$overall[1]
-    
-    temp <- data.frame(week = x, accuracy = logit_acc)
-    df <- rbind(df, temp)
-  }
-  
-  return(df)
-  
-}
-logit_by_weeks <- logit_model(train_for_weeks, test_for_weeks) %>% 
-  arrange(desc(accuracy))
 
 
 # ---- Naive Bayes ----
@@ -254,6 +209,8 @@ vegas_acc   <- vegas_cm$overall[1]
 
 
 # ---- Model Comparison ----
+# Uncomment the code that corresponds to the feature scaling chosen
+
 # # raw df
 # results_raw_df <-
 # data.frame(model    = c("logistic", "naive_bayes", "knn", "svm", "decision_tree", "vegas"),
@@ -286,7 +243,10 @@ main_results_df <- results_raw_df %>%
 view(main_results_df)
 
 ggplot(main_results_df, aes(model, accuracy, fill = feature_str)) +
-  geom_col(position = "dodge")
+  geom_col(position = "dodge") +
+  coord_flip() +
+  labs(x = "", y = "Accuracy", title = "Model Comparison", fill = "Feature Scaling") +
+  theme_classic()
 
 
 # ---- IML ----
@@ -325,7 +285,7 @@ interact.ry <- Interaction$new(predictor.glm, feature = "yards_gained.x") %>%
   plot()
 interact.ry +
   theme_classic() +
-  ggtitle("Logistic Regression Feature Interaction with Receiving Yards")
+  ggtitle("Feature Interaction with yards_gained.x")
 
 # Shapley Values
 high <- predict(logit_fit, features) %>% 
@@ -337,5 +297,56 @@ highest_prob_win <- features[high, ]
 shapley.glm <- Shapley$new(predictor.glm, x.interest = highest_prob_win)
 sum(shapley.glm$results["phi"])
 plot(shapley.glm) +
-  theme_classic()
+  theme_classic() +
+  ggtitle("Prediction: 100% BAL Win
+Result: BAL 42 - NYJ 21")
+
+
+# ---- FUTURE WORK: Logistic Regression Test Loop for Weeks ----
+train_for_weeks <- model_stats[train_ind, ] %>% 
+  drop_na() %>% 
+  merge(schedule[, c("game_id", "week")], by = "game_id", all.x = TRUE) %>% 
+  dplyr::select(-game_id)
+test_for_weeks  <- model_stats[-train_ind, ] %>% 
+  drop_na() %>% 
+  merge(schedule[, c("game_id", "week")], by = "game_id", all.x = TRUE) %>% 
+  dplyr::select(-game_id)
+
+logit_model <- function(train_data, test_data) {
+  
+  train_data <- train_for_weeks
+  test_data  <- test_for_weeks
+  test_label <- test_for_weeks$winner
+  
+  df <- setNames(data.frame(matrix(ncol = 2, nrow = 0)), c("week", "accuracy"))
+  
+  for (x in 2:17) {
+    week_train_data <- train_data %>% 
+      filter(week == x)
+    week_test_data <- test_data %>% 
+      filter(week == x)
+    week_test_label <- week_test_data$winner
+    
+    
+    logit_fit   <- glm(winner ~ .,
+                       data   = week_train_data,
+                       family = binomial)
+    logit_probs <- predict(logit_fit,
+                           newdata = week_test_data,
+                           type    = "response")
+    logit_pred  <- ifelse(logit_probs > 0.5, 1, 0)
+    
+    logit_table <- table(week_test_label, logit_pred)
+    logit_cm    <- caret::confusionMatrix(logit_table)
+    logit_acc   <- logit_cm$overall[1]
+    
+    temp <- data.frame(week = x, accuracy = logit_acc)
+    df <- rbind(df, temp)
+  }
+  
+  return(df)
+  
+}
+logit_by_weeks <- logit_model(train_for_weeks, test_for_weeks) %>% 
+  arrange(desc(accuracy))
 
